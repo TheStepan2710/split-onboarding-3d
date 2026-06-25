@@ -1,0 +1,9 @@
+# Local dev / preview config — not part of the deployable site
+.claude/
+
+# Build output staged by the Pages workflow
+_site/
+
+# OS noise
+.DS_Store
+Thumbs.db

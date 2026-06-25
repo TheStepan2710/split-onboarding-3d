@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#04130d">
+  <title>Split — онбординг</title>
+
+  <!-- No external assets at all. The ₽ glyph and UI text use the platform's
+       system font stack (every modern OS sans ships the ₽ U+20BD glyph), so the
+       page is fully self-contained and works offline — only ./libs/three is needed. -->
+
+  <style>
+    :root { --bg-deep: #04130d; }
+
+    * { margin: 0; box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg-deep);
+      overflow: hidden;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+      /* prevent the page from scrolling / rubber-banding when the user tilts or drags */
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+    canvas { display: block; }
+
+    /* ---- Full-viewport stage ---- */
+    #stage {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      background:
+        radial-gradient(128% 92% at 50% 60%, #14613a 0%, #0b3624 46%, #072619 76%, #04140f 100%);
+    }
+
+    /* Decorative background glows (parallax-free, pure CSS) */
+    .glow {
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 0;
+      will-change: opacity, transform;
+    }
+    .glow--main {
+      left: 50%; top: 56%;
+      width: min(120vmin, 760px); aspect-ratio: 1;
+      transform: translate(-50%, -50%);
+      background: radial-gradient(circle, rgba(48,224,96,.40) 0%, rgba(30,160,60,0) 62%);
+      animation: bgGlow 8s ease-in-out infinite;
+    }
+    .glow--top {
+      left: 22%; top: 12%;
+      width: min(70vmin, 420px); aspect-ratio: 1;
+      transform: translate(-50%, -50%);
+      background: radial-gradient(circle, rgba(140,245,170,.14) 0%, rgba(140,245,170,0) 64%);
+    }
+    .glow--shadow {
+      left: 50%; bottom: 11%;
+      width: min(80vmin, 340px); height: 54px;
+      transform: translateX(-50%);
+      background: radial-gradient(circle, rgba(0,20,11,.55) 0%, rgba(0,20,11,0) 72%);
+      filter: blur(10px);
+    }
+    @keyframes bgGlow {
+      0%, 100% { opacity: .48; transform: translate(-50%, -50%) scale(1); }
+      50%      { opacity: .80; transform: translate(-50%, -50%) scale(1.12); }
+    }
+
+    /* The WebGL canvas sits above the glows, below the post overlays */
+    #scene { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; }
+
+    /* Post overlays: vignette + film grain (match original bundle) */
+    .vignette {
+      position: absolute; inset: 0; z-index: 3; pointer-events: none;
+      box-shadow: inset 0 0 22vmin 6vmin rgba(2,14,10,.7);
+    }
+    .grain {
+      position: absolute; inset: 0; z-index: 4; pointer-events: none;
+      mix-blend-mode: overlay; opacity: .30;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='170' height='170'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+      background-size: 170px 170px;
+    }
+
+    /* ---- Loading state ---- */
+    #loader {
+      position: absolute; inset: 0; z-index: 8;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 18px; color: #cdedd6;
+      background: radial-gradient(120% 90% at 50% 60%, #0c3b27 0%, #061d14 70%, #04130d 100%);
+      transition: opacity .5s ease;
+    }
+    #loader.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 46px; height: 46px; border-radius: 50%;
+      border: 3px solid rgba(120,245,160,.22);
+      border-top-color: #3bf06b;
+      animation: spin .9s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loader .label { font-size: 14px; font-weight: 600; letter-spacing: .02em; opacity: .85; }
+
+    /* Honor reduced-motion: kill the looping CSS animations (the 3D loop is
+       skipped in JS too — a single static assembled frame is shown). */
+    @media (prefers-reduced-motion: reduce) {
+      .glow--main { animation: none; opacity: .64; }
+      .spinner { animation: none; }
+    }
+
+    /* ---- iOS "tap to start" overlay ---- */
+    #start {
+      position: absolute; inset: 0; z-index: 9;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 20px; text-align: center; padding: 24px;
+      background: rgba(4,16,11,.40); backdrop-filter: blur(2px);
+      -webkit-backdrop-filter: blur(2px);
+    }
+    #start.show { display: flex; }
+    #start .hint { color: #e7fff0; font-size: 15px; font-weight: 600; max-width: 260px; line-height: 1.4; opacity: .92; }
+    #start button {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 14px 26px; border: none; border-radius: 1000px;
+      background: #1ec91e; color: #fff; font-family: inherit; font-weight: 700; font-size: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.34); cursor: pointer;
+      transition: transform .12s ease, background .12s ease;
+    }
+    #start button:active { transform: scale(.96); background: #19b519; }
+
+    /* ---- Fatal fallback (WebGL unavailable) — never an empty background ---- */
+    #fallback {
+      position: absolute; inset: 0; z-index: 7; display: none;
+      align-items: flex-end; justify-content: center; padding-bottom: 12%;
+      pointer-events: none;
+    }
+    #fallback.show { display: flex; }
+    #fallback .msg {
+      color: #bfe9cd; font-size: 13px; font-weight: 500; opacity: .7;
+      background: rgba(4,16,11,.45); padding: 8px 14px; border-radius: 999px;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <div class="glow glow--main"></div>
+    <div class="glow glow--top"></div>
+    <div class="glow glow--shadow"></div>
+
+    <canvas id="scene"></canvas>
+
+    <div class="vignette"></div>
+    <div class="grain"></div>
+
+    <!-- Static fallback layer if WebGL can't start (bg still rich, never blank) -->
+    <div id="fallback"><div class="msg">3D-сцена недоступна на этом устройстве</div></div>
+
+    <!-- iOS motion-permission gate -->
+    <div id="start">
+      <div class="hint">Наклоняйте телефон, чтобы оживить сцену</div>
+      <button type="button">Нажмите, чтобы начать</button>
+    </div>
+
+    <!-- Loading state shown until the 3D scene has drawn its first frame -->
+    <div id="loader">
+      <div class="spinner"></div>
+      <div class="label">Загрузка 3D-сцены…</div>
+    </div>
+  </div>
+
+  <script type="module">
+    /* =====================================================================
+       Split onboarding — self-contained static build for GitHub Pages.
+
+       This is a REAL 3D-MESH scene (extruded geometry, physical materials,
+       env reflections) rendered with three.js — NOT a 2.5D CSS-layer parallax.
+       Ported out of the original DCLogic/support.js component bundle into a
+       framework-free page.
+
+       three.js is vendored locally (./libs/three.module.min.js, pinned r160)
+       so the build is fully self-contained and uses only relative paths.
+       ===================================================================== */
+
+    const CONFIG = {
+      loopSec: 8,        // seconds per idle animation loop
+      tiltDeg: 16,       // max world rotation (deg) at full tilt / mouse offset
+      edgeGlow: 1,       // green edge-light intensity multiplier
+      tiltRange: 22,     // device-orientation degrees mapped to full deflection
+      smoothing: 0.07,   // lerp factor (low-pass filter) toward the target
+      fallbackMs: 1000,  // if no orientation event arrives in this window → mouse
+    };
+
+    const els = {
+      stage:    document.getElementById('stage'),
+      canvas:   document.getElementById('scene'),
+      loader:   document.getElementById('loader'),
+      start:    document.getElementById('start'),
+      startBtn: document.querySelector('#start button'),
+      fallback: document.getElementById('fallback'),
+    };
+
+    /* --------------------------------------------------------------------
+       Boot three.js (dynamic import so we can fail gracefully if missing)
+       -------------------------------------------------------------------- */
+    (async function boot() {
+      let THREE;
+      try {
+        THREE = await import('./libs/three.module.min.js');
+      } catch (err) {
+        console.error('Failed to load three.js', err);
+        showFatalFallback();
+        return;
+      }
+      try {
+        const app = new Scene(THREE);
+        await app.init();
+      } catch (err) {
+        console.error('Scene init failed', err);
+        showFatalFallback();
+      }
+    })();
+
+    function showFatalFallback() {
+      els.loader.classList.add('hidden');
+      els.fallback.classList.add('show');
+    }
+
+    /* ====================================================================
+       Scene
+       ==================================================================== */
+    class Scene {
+      constructor(THREE) {
+        this.THREE = THREE;
+        // tilt state — cur follows tgt via lerp (low-pass). Rest = neutral pose.
+        this.rest = { x: 0.06, y: -0.16 };
+        this.cur  = { x: 0.06, y: -0.16 };
+        this.tgt  = { x: 0.06, y: -0.16 };
+        this.point = { x: 0, y: 0 };   // normalized mouse [-1..1]
+        this.gyro  = { x: 0, y: 0 };   // normalized, calibrated tilt [-1..1]
+
+        this.mode = 'idle';            // 'idle' | 'gyro' | 'mouse'
+        this.gotOrientation = false;
+        this.beta0 = null;             // calibration baseline (first reading)
+        this.gamma0 = null;
+
+        this.running = false;
+        this.raf = 0;
+        this.elapsed = 0;              // accumulated animation seconds (survives pause)
+        this.t0 = 0;
+        this.disposables = [];
+        this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        // bound handlers (so we can add/remove cleanly)
+        this.onResize = this.onResize.bind(this);
+        this.onPointer = this.onPointer.bind(this);
+        this.onOrient = this.onOrient.bind(this);
+        this.onVisibility = this.onVisibility.bind(this);
+        this.onContextLost = this.onContextLost.bind(this);
+        this.onContextRestored = this.onContextRestored.bind(this);
+        this.animate = this.animate.bind(this);
+      }
+
+      onContextLost(e) {
+        e.preventDefault();      // signal we want the context restored
+        this.stopLoop();
+        showFatalFallback();     // rich CSS bg + message instead of a frozen canvas
+      }
+      onContextRestored() {
+        els.loader.classList.add('hidden');
+        els.fallback.classList.remove('show');
+        if (!this.reducedMotion && !document.hidden) this.startLoop();
+        else this.renderFrame(this.elapsed);
+      }
+
+      get maxTilt() { return CONFIG.tiltDeg * Math.PI / 180; }
+
+      async init() {
+        const THREE = this.THREE;
+        const canvas = els.canvas;
+
+        if (document.fonts && document.fonts.ready) {
+          try { await document.fonts.ready; } catch (e) {}
+        }
+
+        const w = window.innerWidth, h = window.innerHeight;
+
+        const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2)); // cap DPR at 2
+        renderer.setSize(w, h, false);
+        renderer.toneMapping = THREE.LinearToneMapping;
+        renderer.toneMappingExposure = 0.92;
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
+        this.renderer = renderer;
+
+        // WebGL context loss is routine on mobile (GPU pressure, driver reset).
+        // preventDefault() lets the browser restore it; meanwhile show the static
+        // fallback instead of a frozen blank canvas. three.js re-uploads GPU
+        // resources itself on restore, so we just resume the loop.
+        canvas.addEventListener('webglcontextlost', this.onContextLost, false);
+        canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(28, w / h, 0.1, 100);
+        camera.position.set(0, 0, 13);
+        camera.lookAt(0, 0, 0);
+        this.scene = scene;
+        this.camera = camera;
+
+        // Environment for physical reflections. The PMREM generator and its
+        // source canvas texture are only needed to bake the env map once, so
+        // dispose them immediately after — only envRT.texture must survive.
+        const pmrem = new THREE.PMREMGenerator(renderer);
+        const envSrc = this.envTexture();
+        const envRT = pmrem.fromEquirectangular(envSrc);
+        scene.environment = envRT.texture;
+        envSrc.dispose();
+        pmrem.dispose();
+
+        // Lights
+        scene.add(new THREE.AmbientLight(0x46624f, 0.5));
+        const key = new THREE.DirectionalLight(0xffffff, 2.1); key.position.set(-4, 5.5, 6); scene.add(key);
+        const front = new THREE.DirectionalLight(0xffffff, 0.55); front.position.set(0.5, 1, 8); scene.add(front);
+        const fill = new THREE.DirectionalLight(0x9affc0, 0.45); fill.position.set(5, -1.5, 4); scene.add(fill);
+        const rim = new THREE.DirectionalLight(0x66ff99, 0.8); rim.position.set(2.5, 4, -5); scene.add(rim);
+        const sweep = new THREE.PointLight(0xfff0d8, 8, 45, 1.5); sweep.position.set(-3, 3, 5); scene.add(sweep);
+        this.sweep = sweep;
+
+        const world = new THREE.Group();
+        scene.add(world);
+        this.world = world;
+        world.position.set(0, 0.08, 0);
+
+        this.buildFrame(world);
+        this.buildPercent(world);
+        this.buildSpiral(world);
+        this.buildCoins(world);
+        this.buildCheck(world);
+
+        this.disposables.push(renderer, envRT);
+
+        this.fitWorld();
+        this.renderFrame(0);
+
+        // first frame is on screen → drop the loader
+        els.loader.classList.add('hidden');
+
+        // resize always reflows the (possibly static) scene
+        window.addEventListener('resize', this.onResize);
+
+        // Respect reduced-motion: show the fully assembled scene as a single
+        // static frame — no autoplay loop, no idle/tilt motion.
+        if (this.reducedMotion) return;
+
+        this.setupInteraction();
+        document.addEventListener('visibilitychange', this.onVisibility);
+        this.startLoop();
+      }
+
+      /* ---------------- shape helpers ---------------- */
+      roundRectShape(w, h, r) {
+        const THREE = this.THREE; const s = new THREE.Shape();
+        const x = -w / 2, y = -h / 2;
+        s.moveTo(x + r, y);
+        s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+        s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+        s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+        return s;
+      }
+      roundRectPath(w, h, r) {
+        const THREE = this.THREE; const p = new THREE.Path();
+        const x = -w / 2, y = -h / 2;
+        p.moveTo(x + r, y);
+        p.lineTo(x + w - r, y); p.quadraticCurveTo(x + w, y, x + w, y + r);
+        p.lineTo(x + w, y + h - r); p.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+        p.lineTo(x + r, y + h); p.quadraticCurveTo(x, y + h, x, y + h - r);
+        p.lineTo(x, y + r); p.quadraticCurveTo(x, y, x + r, y);
+        return p;
+      }
+      ringShape(ro, ri) {
+        const THREE = this.THREE; const s = new THREE.Shape();
+        s.absarc(0, 0, ro, 0, Math.PI * 2, false);
+        const hole = new THREE.Path();
+        hole.absarc(0, 0, ri, 0, Math.PI * 2, true);
+        s.holes.push(hole);
+        return s;
+      }
+
+      /* ---------------- textures ---------------- */
+      reedTexture() {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = 1024; c.height = 8;
+        const g = c.getContext('2d');
+        for (let i = 0; i < 1024; i++) {
+          const v = 128 + Math.round(90 * Math.sin(i / 1024 * Math.PI * 2 * 90));
+          g.fillStyle = 'rgb(' + v + ',' + v + ',' + v + ')'; g.fillRect(i, 0, 1, 8);
+        }
+        const t = new THREE.CanvasTexture(c);
+        t.wrapS = THREE.RepeatWrapping; t.wrapT = THREE.RepeatWrapping;
+        return t;
+      }
+      glyphHeight(drawFn, rot, blur) {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const g = c.getContext('2d');
+        g.fillStyle = '#000'; g.fillRect(0, 0, 256, 256);
+        g.filter = 'blur(' + (blur == null ? 3 : blur) + 'px)';
+        g.fillStyle = '#fff'; g.strokeStyle = '#fff';
+        g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineCap = 'round'; g.lineJoin = 'round';
+        drawFn(g);
+        g.filter = 'none';
+        const t = new THREE.CanvasTexture(c);
+        t.anisotropy = 4; t.center.set(0.5, 0.5); t.rotation = (rot == null ? Math.PI / 2 : rot);
+        return t;
+      }
+      circleAlphaTex() {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const g = c.getContext('2d');
+        g.fillStyle = '#000'; g.fillRect(0, 0, 256, 256);
+        g.fillStyle = '#fff'; g.beginPath(); g.arc(128, 128, 126, 0, Math.PI * 2); g.fill();
+        return new THREE.CanvasTexture(c);
+      }
+      goldFaceTex() {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const g = c.getContext('2d');
+        const rg = g.createRadialGradient(98, 84, 12, 128, 132, 158);
+        rg.addColorStop(0, '#ffe6a0'); rg.addColorStop(0.5, '#edb846'); rg.addColorStop(1, '#c1851b');
+        g.fillStyle = rg; g.fillRect(0, 0, 256, 256);
+        g.lineWidth = 10; g.strokeStyle = 'rgba(150,104,24,0.4)';
+        g.beginPath(); g.arc(128, 128, 116, 0, Math.PI * 2); g.stroke();
+        return new THREE.CanvasTexture(c);
+      }
+      checkFaceTex() {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = c.height = 256;
+        const g = c.getContext('2d');
+        g.fillStyle = '#16b81c'; g.fillRect(0, 0, 256, 256);
+        g.strokeStyle = '#ffffff'; g.lineCap = 'round'; g.lineJoin = 'round'; g.lineWidth = 36;
+        g.beginPath(); g.moveTo(74, 138); g.lineTo(114, 178); g.lineTo(186, 84); g.stroke();
+        return new THREE.CanvasTexture(c);
+      }
+      makeEmboss(albedoTex, heightTex, alphaTex, radius, height, matProps) {
+        const THREE = this.THREE;
+        const geo = new THREE.PlaneGeometry(radius * 2, radius * 2, 168, 168);
+        const mat = new THREE.MeshPhysicalMaterial(Object.assign({
+          map: albedoTex, displacementMap: heightTex, displacementScale: height, displacementBias: 0,
+          bumpMap: heightTex, bumpScale: 1.5, alphaMap: alphaTex, alphaTest: 0.5, transparent: false
+        }, matProps || {}));
+        this.disposables.push(geo, mat);
+        return new THREE.Mesh(geo, mat);
+      }
+      envTexture() {
+        const THREE = this.THREE;
+        const c = document.createElement('canvas'); c.width = 512; c.height = 256;
+        const g = c.getContext('2d');
+        const grad = g.createLinearGradient(0, 0, 0, 256);
+        grad.addColorStop(0, '#fff4e2'); grad.addColorStop(0.3, '#e4e0d2');
+        grad.addColorStop(0.5, '#b8b4a4'); grad.addColorStop(0.72, '#7a766a'); grad.addColorStop(1, '#33332c');
+        g.fillStyle = grad; g.fillRect(0, 0, 512, 256);
+        g.fillStyle = 'rgba(255,250,240,1)'; g.fillRect(40, 84, 210, 46);
+        g.fillStyle = 'rgba(255,255,255,0.75)'; g.fillRect(310, 104, 150, 26);
+        g.fillStyle = 'rgba(255,243,222,0.6)'; g.fillRect(150, 24, 150, 22);
+        const rg = g.createRadialGradient(256, 112, 4, 256, 112, 70);
+        rg.addColorStop(0, 'rgba(255,255,255,1)'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+        g.fillStyle = rg; g.fillRect(176, 42, 160, 140);
+        const t = new THREE.CanvasTexture(c);
+        t.mapping = THREE.EquirectangularReflectionMapping; t.colorSpace = THREE.SRGBColorSpace;
+        return t;
+      }
+
+      /* ---------------- meshes ---------------- */
+      buildFrame(world) {
+        const THREE = this.THREE;
+        const FW = 2.15, FH = 3.12, FB = 0.26;
+        const frameShape = this.roundRectShape(FW, FH, 0.44);
+        frameShape.holes.push(this.roundRectPath(FW - FB * 2, FH - FB * 2, 0.3));
+        const frameGeo = new THREE.ExtrudeGeometry(frameShape, { depth: 0.36, bevelEnabled: true, bevelThickness: 0.05, bevelSize: 0.05, bevelSegments: 3, curveSegments: 28 });
+        frameGeo.center();
+        const frameMat = new THREE.MeshPhysicalMaterial({ color: 0xd4f1dc, metalness: 0.0, roughness: 0.34, clearcoat: 0.55, clearcoatRoughness: 0.28, transparent: false, opacity: 1, envMapIntensity: 0.6 });
+        const frame = new THREE.Mesh(frameGeo, frameMat); frame.position.set(0, 0, 0.08); world.add(frame);
+
+        const edgeShape = this.roundRectShape(FW - FB * 2 + 0.04, FH - FB * 2 + 0.04, 0.28);
+        edgeShape.holes.push(this.roundRectPath(FW - FB * 2 - 0.02, FH - FB * 2 - 0.02, 0.26));
+        const edgeGeo = new THREE.ExtrudeGeometry(edgeShape, { depth: 0.05, bevelEnabled: false, curveSegments: 28 });
+        edgeGeo.center();
+        const edgeMat = new THREE.MeshStandardMaterial({ color: 0x39e066, emissive: 0x3bf06b, emissiveIntensity: 1.8 * CONFIG.edgeGlow, roughness: 0.4, metalness: 0 });
+        const edge = new THREE.Mesh(edgeGeo, edgeMat); edge.position.set(0, 0, 0.28); world.add(edge);
+        this.edgeMat = edgeMat;
+
+        this.disposables.push(frameGeo, frameMat, edgeGeo, edgeMat);
+      }
+
+      buildPercent(world) {
+        const THREE = this.THREE;
+        const pctGroup = new THREE.Group();
+        const pctMat = new THREE.MeshPhysicalMaterial({ color: 0x2bca2f, emissive: 0x0a4a0c, emissiveIntensity: 0.25, metalness: 0.0, roughness: 0.32, clearcoat: 1.0, clearcoatRoughness: 0.18, envMapIntensity: 0.35 });
+        const exOpt = { depth: 0.16, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 3, curveSegments: 36 };
+        const r1geo = new THREE.ExtrudeGeometry(this.ringShape(0.5, 0.23), exOpt); r1geo.center();
+        const ring1 = new THREE.Mesh(r1geo, pctMat); ring1.position.set(-0.46, 0.6, 0);
+        const r2geo = new THREE.ExtrudeGeometry(this.ringShape(0.5, 0.23), exOpt); r2geo.center();
+        const ring2 = new THREE.Mesh(r2geo, pctMat); ring2.position.set(0.52, -0.66, 0);
+        const barGeo = new THREE.ExtrudeGeometry(this.roundRectShape(1.95, 0.5, 0.25), exOpt); barGeo.center();
+        const bar = new THREE.Mesh(barGeo, pctMat);
+        bar.rotation.z = Math.atan2(0.66 + 0.6, 0.52 + 0.46); bar.position.set(0.03, -0.03, 0);
+        pctGroup.add(ring1, ring2, bar);
+        pctGroup.position.set(0.06, 0.12, 0.55); pctGroup.scale.setScalar(0.82);
+        world.add(pctGroup);
+        this.disposables.push(r1geo, r2geo, barGeo, pctMat);
+      }
+
+      buildSpiral(world) {
+        const THREE = this.THREE;
+        const torusGeo = new THREE.TorusGeometry(1.37, 0.20, 22, 320);
+        const pos = torusGeo.attributes.position;
+        const colors = new Float32Array(pos.count * 3);
+        const col = new THREE.Color();
+        for (let i = 0; i < pos.count; i++) {
+          const ang = Math.atan2(pos.getY(i), pos.getX(i));
+          const hue = 0.45 + 0.1 * Math.cos(ang - 0.7);
+          col.setHSL(hue, 0.82, 0.5);
+          colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b;
+        }
+        torusGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const torusMat = new THREE.MeshPhysicalMaterial({ vertexColors: true, metalness: 0.0, roughness: 0.3, clearcoat: 0.9, clearcoatRoughness: 0.25, envMapIntensity: 0.4 });
+        const torus = new THREE.Mesh(torusGeo, torusMat);
+        torus.scale.set(1, 1, 0.55);
+        const spiral = new THREE.Group(); spiral.add(torus);
+        spiral.rotation.set(0.96, 0, -0.24);
+        spiral.position.set(0, 0, 0.08);
+        world.add(spiral);
+        torus.rotation.z = 0.7;
+        this.torus = torus;
+        this.disposables.push(torusGeo, torusMat);
+      }
+
+      buildCoins(world) {
+        const THREE = this.THREE;
+        const goldFaceTex = this.goldFaceTex();
+        const reed = this.reedTexture(); reed.repeat.set(46, 1);
+        const circleAlpha = this.circleAlphaTex();
+        const rubH = this.glyphHeight((g) => { g.font = '900 168px Arial, "Segoe UI", system-ui, sans-serif'; g.fillText('₽', 128, 132); }, 0, 3);
+        const goldFace = new THREE.MeshPhysicalMaterial({ map: goldFaceTex, metalness: 0.62, roughness: 0.3, clearcoat: 0.4, clearcoatRoughness: 0.24, envMapIntensity: 1.15 });
+        const goldSide = new THREE.MeshPhysicalMaterial({ color: 0xe3a82f, metalness: 0.7, roughness: 0.36, clearcoat: 0.4, bumpMap: reed, bumpScale: 0.02, envMapIntensity: 0.95 });
+        const coinTh = 0.15;
+        const coinGeo = new THREE.CylinderGeometry(0.34, 0.34, coinTh, 70, 1);
+        const coinDefs = [
+          { p: [-0.46, 1.5, 1.82], ph: 0.0 },
+          { p: [-0.86, 0.74, 1.68], ph: 2.1 },
+          { p: [-0.5, 0.0, 1.76], ph: 4.2 }
+        ];
+        this.coins = [];
+        coinDefs.forEach((d) => {
+          const m = new THREE.Mesh(coinGeo, [goldSide, goldFace, goldFace]);
+          m.rotation.x = Math.PI / 2 - 0.16; m.rotation.y = -0.18;
+          m.position.set(d.p[0], d.p[1], d.p[2]);
+          m.userData = { baseY: d.p[1], ph: d.ph };
+          const emb = this.makeEmboss(goldFaceTex, rubH, circleAlpha, 0.34, coinTh * 0.5, { metalness: 0.62, roughness: 0.3, clearcoat: 0.4, clearcoatRoughness: 0.24, envMapIntensity: 1.15 });
+          emb.rotation.x = -Math.PI / 2; emb.position.set(0, coinTh * 0.5 + 0.001, 0);
+          m.add(emb);
+          world.add(m); this.coins.push(m);
+        });
+        this.disposables.push(goldFaceTex, reed, circleAlpha, rubH, coinGeo, goldFace, goldSide);
+      }
+
+      buildCheck(world) {
+        const THREE = this.THREE;
+        const chkFaceTex = this.checkFaceTex();
+        const chkH = this.glyphHeight((g) => { g.lineWidth = 40; g.beginPath(); g.moveTo(74, 138); g.lineTo(114, 178); g.lineTo(186, 84); g.stroke(); }, 0, 3);
+        const chkFace = new THREE.MeshPhysicalMaterial({ map: chkFaceTex, metalness: 0.0, roughness: 0.32, clearcoat: 0.6, clearcoatRoughness: 0.18, envMapIntensity: 0.4 });
+        const chkSide = new THREE.MeshPhysicalMaterial({ color: 0x12951a, metalness: 0.0, roughness: 0.36, clearcoat: 0.6, envMapIntensity: 0.5 });
+        const chkTh = 0.16;
+        const chkGeo = new THREE.CylinderGeometry(0.44, 0.44, chkTh, 64, 1);
+        const check = new THREE.Mesh(chkGeo, [chkSide, chkFace, chkFace]);
+        check.rotation.x = Math.PI / 2 - 0.05;
+        check.position.set(0.64, -1.04, 1.34);
+        check.userData = { baseY: -1.04, ph: 1.0 };
+        const chkAlpha = this.circleAlphaTex();
+        const chkEmb = this.makeEmboss(chkFaceTex, chkH, chkAlpha, 0.44, chkTh * 0.5, { metalness: 0.0, roughness: 0.32, clearcoat: 0.6, clearcoatRoughness: 0.18, envMapIntensity: 0.4 });
+        chkEmb.rotation.x = -Math.PI / 2; chkEmb.position.set(0, chkTh * 0.5 + 0.001, 0);
+        check.add(chkEmb);
+        world.add(check);
+        this.check = check;
+        this.disposables.push(chkFaceTex, chkH, chkFace, chkSide, chkGeo, chkAlpha);
+      }
+
+      /* ---------------- responsive framing ---------------- */
+      // Scale the world group so the composition fits any viewport aspect.
+      fitWorld() {
+        if (!this.world || !this.camera) return;
+        // Approx artwork bounds incl. left coins + spiral overhang (world units).
+        const COMP_W = 3.05, COMP_H = 4.7;
+        const vFov = this.camera.fov * Math.PI / 180;
+        const dist = this.camera.position.z;
+        const visH = 2 * dist * Math.tan(vFov / 2);
+        const visW = visH * this.camera.aspect;
+        let scale = Math.min(visW / COMP_W, visH / COMP_H) * 0.92;
+        scale = Math.max(0.55, Math.min(scale, 1.18)); // sane clamps
+        this.world.scale.setScalar(scale);
+      }
+
+      onResize() {
+        if (!this.renderer) return;
+        const w = window.innerWidth, h = window.innerHeight;
+        this.renderer.setSize(w, h, false);
+        this.camera.aspect = w / h;
+        this.camera.updateProjectionMatrix();
+        this.fitWorld();
+        // repaint the static frame on resize, but never render while hidden
+        if (!this.running && !document.hidden) this.renderFrame(this.elapsed);
+      }
+
+      /* ---------------- render + animation ---------------- */
+      renderFrame(t) {
+        const loop = CONFIG.loopSec;
+        const p = (t % loop) / loop;
+        const TAU = Math.PI * 2;
+        if (this.torus) this.torus.rotation.z = 0.7 + p * TAU;
+        if (this.coins) this.coins.forEach((c) => {
+          c.position.y = c.userData.baseY + Math.sin(p * TAU + c.userData.ph) * 0.055;
+          c.rotation.z = Math.sin(p * TAU + c.userData.ph) * 0.05;
+        });
+        if (this.check) {
+          this.check.position.y = this.check.userData.baseY + Math.sin(p * TAU + this.check.userData.ph) * 0.05;
+        }
+        if (this.sweep) {
+          this.sweep.position.set(Math.cos(p * TAU) * 4.5, 2.5 + Math.sin(p * TAU) * 2, 5);
+        }
+        if (this.edgeMat) this.edgeMat.emissiveIntensity = (1.9 + 0.5 * Math.sin(p * TAU)) * CONFIG.edgeGlow;
+        if (this.world) { this.world.rotation.x = this.cur.x; this.world.rotation.y = this.cur.y; }
+        if (this.renderer) this.renderer.render(this.scene, this.camera);
+      }
+
+      animate() {
+        if (!this.running) return;
+        const now = performance.now();
+        const t = this.elapsed + (now - this.t0) / 1000;
+
+        // gentle idle motion so the scene is alive even with no input
+        const idleX = Math.sin(t * 0.5) * 0.03;
+        const idleY = Math.cos(t * 0.37) * 0.045;
+
+        let inX = 0, inY = 0;
+        if (this.mode === 'gyro') {
+          inY = this.gyro.x * this.maxTilt;
+          inX = -this.gyro.y * this.maxTilt;
+        } else if (this.mode === 'mouse') {
+          inY = this.point.x * this.maxTilt * 0.85;
+          inX = -this.point.y * this.maxTilt * 0.85;
+        }
+
+        this.tgt.x = this.rest.x + idleX + inX;
+        this.tgt.y = this.rest.y + idleY + inY;
+        // low-pass filter / lerp toward target — prevents jitter & sharp jumps
+        this.cur.x += (this.tgt.x - this.cur.x) * CONFIG.smoothing;
+        this.cur.y += (this.tgt.y - this.cur.y) * CONFIG.smoothing;
+
+        this.renderFrame(t);
+        this.raf = requestAnimationFrame(this.animate);
+      }
+
+      startLoop() {
+        if (this.running) return;
+        this.running = true;
+        this.t0 = performance.now();
+        this.raf = requestAnimationFrame(this.animate);
+      }
+      stopLoop() {
+        if (!this.running) return;
+        // bank elapsed time so resume is seamless (no animation jump)
+        this.elapsed += (performance.now() - this.t0) / 1000;
+        this.running = false;
+        if (this.raf) cancelAnimationFrame(this.raf);
+        this.raf = 0;
+      }
+
+      /* ---------------- visibility: stop render + listeners ---------------- */
+      onVisibility() {
+        if (document.hidden) {
+          this.stopLoop();
+          this.detachInput();
+        } else {
+          this.attachInput();
+          this.startLoop();
+        }
+      }
+
+      /* ---------------- interaction wiring ---------------- */
+      setupInteraction() {
+        const DOE = window.DeviceOrientationEvent;
+        const needsPermission = DOE && typeof DOE.requestPermission === 'function';
+        const isTouch = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
+
+        // Pointer parallax is always wired; it's only *applied* in 'mouse' mode.
+        this.attachInput();
+
+        if (!isTouch) {
+          // Desktop / non-touch → mouse parallax immediately.
+          this.mode = 'mouse';
+          return;
+        }
+
+        if (needsPermission) {
+          // iOS 13+ : must ask permission from inside a user gesture.
+          els.start.classList.add('show');
+          els.startBtn.addEventListener('click', () => {
+            els.start.classList.remove('show');
+            DOE.requestPermission().then((res) => {
+              if (res === 'granted') {
+                this.subscribeOrientation();
+                this.startFallbackTimer();
+              } else {
+                // denied → keep the fully-assembled static scene (idle only)
+                this.mode = 'idle';
+              }
+            }).catch(() => { this.mode = 'idle'; });
+          }, { once: true });
+        } else if (DOE) {
+          // Android / other touch devices: no permission needed.
+          this.subscribeOrientation();
+          this.startFallbackTimer();
+        } else {
+          // No orientation API at all → mouse parallax (works with touch-drag too).
+          this.mode = 'mouse';
+        }
+      }
+
+      startFallbackTimer() {
+        clearTimeout(this._fbTimer);
+        this._fbTimer = setTimeout(() => {
+          // No orientation event arrived in ~1s → switch to mouse parallax.
+          if (!this.gotOrientation && this.mode !== 'gyro') this.mode = 'mouse';
+        }, CONFIG.fallbackMs);
+      }
+
+      subscribeOrientation() {
+        this._orientationSubscribed = true;
+        window.addEventListener('deviceorientation', this.onOrient);
+      }
+
+      attachInput() {
+        window.addEventListener('pointermove', this.onPointer, { passive: true });
+        if (this._orientationSubscribed) window.addEventListener('deviceorientation', this.onOrient);
+      }
+      detachInput() {
+        window.removeEventListener('pointermove', this.onPointer);
+        window.removeEventListener('deviceorientation', this.onOrient);
+      }
+
+      onPointer(e) {
+        const w = window.innerWidth || 1, h = window.innerHeight || 1;
+        this.point.x = (e.clientX / w) * 2 - 1;
+        this.point.y = (e.clientY / h) * 2 - 1;
+      }
+
+      onOrient(e) {
+        const beta = e.beta, gamma = e.gamma;
+        // Ignore empty warm-up events (some devices emit null/NaN before the
+        // sensor settles) so we don't calibrate against a garbage baseline.
+        if (!Number.isFinite(beta) && !Number.isFinite(gamma)) return;
+        this.gotOrientation = true;
+        this.mode = 'gyro';
+        // first valid reading = neutral calibration point (relative to how it's held)
+        if (this.beta0 == null) {
+          this.beta0 = Number.isFinite(beta) ? beta : 0;
+          this.gamma0 = Number.isFinite(gamma) ? gamma : 0;
+        }
+        const R = CONFIG.tiltRange;
+        const b = Number.isFinite(beta) ? beta : this.beta0;
+        const gm = Number.isFinite(gamma) ? gamma : this.gamma0;
+        // gamma (left-right tilt) → horizontal ;  beta (front-back) → vertical
+        this.gyro.x = clamp(gm - this.gamma0, -R, R) / R;
+        this.gyro.y = clamp(b - this.beta0, -R, R) / R;
+      }
+
+      dispose() {
+        this.stopLoop();
+        this.detachInput();
+        clearTimeout(this._fbTimer);
+        window.removeEventListener('resize', this.onResize);
+        document.removeEventListener('visibilitychange', this.onVisibility);
+        if (els.canvas) {
+          els.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+          els.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
+        }
+        (this.disposables || []).forEach((d) => { try { d.dispose && d.dispose(); } catch (e) {} });
+      }
+    }
+
+    function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+  </script>
+</body>
+</html>
