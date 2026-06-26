@@ -6,9 +6,13 @@
   <meta name="theme-color" content="#04130d">
   <title>Split — онбординг</title>
 
-  <!-- No external assets at all. The ₽ glyph and UI text use the platform's
-       system font stack (every modern OS sans ships the ₽ U+20BD glyph), so the
-       page is fully self-contained and works offline — only ./libs/three is needed. -->
+  <!-- The 3D engine (./libs/three) is vendored locally and the scene is fully
+       procedural. The onboarding UI text uses the brand fonts from the design
+       system — Geologica (heading) + Inter (button) — loaded from Google Fonts
+       with a system-font fallback, so the page still degrades gracefully offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@600&family=Inter:wght@700&display=swap">
 
   <style>
     :root { --bg-deep: #04130d; }
@@ -82,6 +86,44 @@
       background-size: 170px 170px;
     }
 
+    /* ---- Onboarding UI (heading + CTA) — overlaid above the scene, never
+       touching the 3D/background. Sits above the grain/vignette so the white
+       button stays clean, below the loader/start gates. Laid out in a centered
+       412px "phone column" mirroring the Figma frame (16px side margins). ---- */
+    #ui {
+      position: absolute; inset: 0; z-index: 5;
+      width: 100%; max-width: 412px; left: 50%; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; justify-content: space-between;
+      padding: calc(env(safe-area-inset-top, 0px) + 54px) 16px
+               calc(env(safe-area-inset-bottom, 0px) + 40px);
+      pointer-events: none; /* children opt back in */
+    }
+    .ui-title {
+      margin: 0; max-width: 380px; text-align: center;
+      font-family: "Geologica", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-weight: 600;
+      font-size: clamp(24px, 7.3vw, 30px); /* 30px at the 412px design width */
+      line-height: 1; letter-spacing: 0; color: #fff;
+      font-variation-settings: "SHRP" 0, "CRSV" 0;
+      text-wrap: balance;
+      text-shadow: 0 2px 14px rgba(0, 0, 0, .28); /* legibility insurance over the scene */
+    }
+    .ui-cta {
+      pointer-events: auto;
+      width: 100%; max-width: 380px; height: 52px;
+      border: none; border-radius: 8px;
+      background: #fff; color: #121212;
+      font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      font-weight: 700; font-size: 16px; line-height: 1.4;
+      cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      box-shadow: 0 -1px 10px rgba(27, 29, 38, .10), 0 6px 18px rgba(0, 0, 0, .18);
+      transition: transform .12s ease, background .12s ease;
+    }
+    .ui-cta:hover { background: #f7f8fa; }
+    .ui-cta:active { transform: scale(.985); background: #eef0f3; }
+    .ui-cta:focus-visible { outline: 3px solid rgba(59, 240, 107, .7); outline-offset: 3px; }
+
     /* ---- Loading state ---- */
     #loader {
       position: absolute; inset: 0; z-index: 8;
@@ -149,6 +191,12 @@
 
     <div class="vignette"></div>
     <div class="grain"></div>
+
+    <!-- Onboarding UI: heading + CTA, overlaid above the scene (no 3D/bg changes) -->
+    <div id="ui">
+      <h1 class="ui-title">Повышенный кэшбек<br>для клиентов Сбера</h1>
+      <button class="ui-cta" type="button">Супер</button>
+    </div>
 
     <!-- Static fallback layer if WebGL can't start (bg still rich, never blank) -->
     <div id="fallback"><div class="msg">3D-сцена недоступна на этом устройстве</div></div>
