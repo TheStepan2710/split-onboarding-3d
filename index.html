@@ -147,6 +147,7 @@
     @media (prefers-reduced-motion: reduce) {
       .glow--main { animation: none; opacity: .64; }
       .spinner { animation: none; }
+      #rotate .phone { animation: none; transform: rotate(-45deg); }
     }
 
     /* ---- iOS "tap to start" overlay ---- */
@@ -178,6 +179,35 @@
     #fallback .msg {
       color: #bfe9cd; font-size: 13px; font-weight: 500; opacity: .7;
       background: rgba(4,16,11,.45); padding: 8px 14px; border-radius: 999px;
+    }
+
+    /* ---- Portrait lock ----
+       The onboarding is portrait-only. When a phone is turned to landscape we
+       DON'T stretch or rotate the interface — we show this gate instead (the
+       layout underneath stays exactly portrait). Small gyro tilts (±20°) never
+       trigger a landscape switch, so the 3D keeps reacting to tilt in portrait.
+       Desktop (pointer:fine) is never gated — only touch devices. */
+    #rotate {
+      position: fixed; inset: 0; z-index: 10; display: none;
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 22px; text-align: center; padding: 24px;
+      background: radial-gradient(120% 90% at 50% 50%, #0c3b27 0%, #061d14 70%, #04130d 100%);
+      color: #e7fff0;
+    }
+    @media (orientation: landscape) and (pointer: coarse) {
+      #rotate { display: flex; }
+    }
+    #rotate .phone {
+      width: 58px; height: 58px; color: #3bf06b;
+      animation: rotateHint 2.6s ease-in-out infinite; transform-origin: 50% 50%;
+    }
+    #rotate p {
+      margin: 0; max-width: 280px; line-height: 1.4;
+      font-family: "Geologica", system-ui, sans-serif; font-weight: 600; font-size: 18px;
+    }
+    @keyframes rotateHint {
+      0%, 45% { transform: rotate(0deg); }
+      70%, 100% { transform: rotate(-90deg); }
     }
   </style>
 </head>
@@ -211,6 +241,15 @@
     <div id="loader">
       <div class="spinner"></div>
       <div class="label">Загрузка 3D-сцены…</div>
+    </div>
+
+    <!-- Portrait-lock gate: shown (CSS) only on touch devices in landscape -->
+    <div id="rotate" aria-hidden="true">
+      <svg class="phone" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="7" y="2" width="10" height="20" rx="2.2"></rect>
+        <line x1="11" y1="18.5" x2="13" y2="18.5"></line>
+      </svg>
+      <p>Поверните телефон вертикально</p>
     </div>
   </div>
 
@@ -295,15 +334,33 @@
         this.t0 = 0;
         this.disposables = [];
         this.reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+        this.isTouch = matchMedia('(pointer: coarse)').matches || ('ontouchstart' in window);
+        // portrait-lock: only touch devices are gated in landscape (not desktop)
+        this.mqLandscape = matchMedia('(orientation: landscape)');
 
         // bound handlers (so we can add/remove cleanly)
         this.onResize = this.onResize.bind(this);
         this.onPointer = this.onPointer.bind(this);
         this.onOrient = this.onOrient.bind(this);
         this.onVisibility = this.onVisibility.bind(this);
+        this.onOrientation = this.onOrientation.bind(this);
         this.onContextLost = this.onContextLost.bind(this);
         this.onContextRestored = this.onContextRestored.bind(this);
         this.animate = this.animate.bind(this);
+      }
+
+      // True when the phone is held landscape and the portrait-lock gate is up.
+      isGated() { return this.isTouch && this.mqLandscape.matches; }
+
+      // Pause the render loop behind the rotate gate (battery); resume in portrait.
+      onOrientation() {
+        if (this.isGated()) {
+          this.stopLoop();
+        } else if (!this.reducedMotion && !document.hidden) {
+          this.startLoop();
+        } else {
+          this.renderFrame(this.elapsed);
+        }
       }
 
       onContextLost(e) {
@@ -399,7 +456,9 @@
 
         this.setupInteraction();
         document.addEventListener('visibilitychange', this.onVisibility);
-        this.startLoop();
+        // portrait-lock: pause/resume the loop as the device rotates
+        this.mqLandscape.addEventListener('change', this.onOrientation);
+        if (!this.isGated()) this.startLoop();
       }
 
       /* ---------------- shape helpers ---------------- */
@@ -728,7 +787,7 @@
           this.detachInput();
         } else {
           this.attachInput();
-          this.startLoop();
+          if (!this.isGated()) this.startLoop(); // stay paused behind the rotate gate
         }
       }
 
@@ -826,6 +885,7 @@
         clearTimeout(this._fbTimer);
         window.removeEventListener('resize', this.onResize);
         document.removeEventListener('visibilitychange', this.onVisibility);
+        this.mqLandscape.removeEventListener('change', this.onOrientation);
         if (els.canvas) {
           els.canvas.removeEventListener('webglcontextlost', this.onContextLost);
           els.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
